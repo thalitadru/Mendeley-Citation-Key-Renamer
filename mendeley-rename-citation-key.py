@@ -2,11 +2,29 @@
 import os
 import apsw
 import re
+import string
 
+from unidecode import unidecode
 from pprint import pprint
-from titlecase import titlecase
 
-from abbr_rule import abbr_rule
+
+MAX_AUTH = 1
+ETAL = False
+
+def get_first_word(title):
+    # lista igual a do JabRef https://github.com/JabRef/jabref/blob/master/src/main/java/net/sf/jabref/logic/formatter/casechanger/Word.java
+    eliminate = set([
+        # articles
+        "a", "an", "the", 
+        # prepositions
+        "above", "about", "across", "against", "along", "among", "around", "at", "before", "behind", "below", "beneath", "beside", "between", "beyond", "by", "down", "during", "except", "for", "from", "in", "inside", "into", "like", "near", "of", "off", "on", "onto", "since", "to", "toward", "through", "under", "until", "up", "upon", "with", "within", "without", 
+        # conjunctions
+        "and", "but", "for", "nor", "or", "so", "yet"])
+    for word in title.replace('-',' ').replace(':','').replace(',','').replace('{','').replace('}', '').split():
+        if word.lower() not in eliminate:
+            break
+    return word
+
 
 def regexp(expr, item):
     reg = re.compile(expr)
@@ -30,20 +48,18 @@ unicode_rule = {'. ': '-',
                 }
 
 def remove_unicode(arg):
-    for a_unicode in unicode_rule.keys():
-        arg = arg.replace(a_unicode, unicode_rule[a_unicode])
-    return(arg)
+    return unidecode(arg)
 
 if __name__ == '__main__':
     '''
     change Mendeley citation key to author-author-year-journalabbr format
     '''
-    sqlite = 'joonhyoung.ro@gmail.com@www.mendeley.com.sqlite'  # change
+    sqlite = 'thalitafdrumond@gmail.com@www.mendeley.com.sqlite'  # change
 
     if os.name == 'nt':
-        path_db = r'\Users\joon\AppData\Local\Mendeley Ltd\Mendeley Desktop\{}'.format(sqlite)
+        path_db = r'\Users\thalita\AppData\Local\Mendeley Ltd\Mendeley Desktop\{}'.format(sqlite)
     else:
-        path_db = '/home/joon/.local/share/data/Mendeley Ltd./Mendeley Desktop/'.format(sqlite)
+        path_db = r'/home/thalita/.local/share/data/Mendeley Ltd./Mendeley Desktop/{}'.format(sqlite)
 
     con = apsw.Connection(path_db)
 
@@ -51,17 +67,8 @@ if __name__ == '__main__':
 
     cur = con.cursor()
 
-    # remove C:/ from localUrl
-    cur.execute("SELECT localUrl FROM Files WHERE localUrl LIKE '%file:///C:/home%';")
-    localUrls = cur.fetchall()[:]
-    if len(localUrls):
-        cur.execute(("UPDATE Files SET localUrl = REPLACE(localUrl, 'file:///C:/home',"
-                     "'file:///home') WHERE localUrl LIKE '%file:///C:/home%';"))
 
-        print('Fixed the following localUrl(s):')
-        pprint(localUrls)
-
-    cur.execute("SELECT id FROM Documents")
+    cur.execute("SELECT documentId FROM DocumentFolders WHERE (folderId=1 OR folderId=2)")
     documentids = cur.fetchall()[:]
 
     modified = []  # list of modified citations
@@ -112,12 +119,12 @@ if __name__ == '__main__':
 
         key_author = ''
         for j, lastname in enumerate(lastnames):
-            if j == 3:
-                key_author += ' ' + 'et-al'
+            if j == MAX_AUTH:
+                key_author += (' ' + 'et-al') * ETAL
                 break
             else:
-                key_author += ' ' + lastname[0]
-
+                key_author += ' ' * bool(j) + lastname[0]
+        
         key_author = key_author.strip().title()
 
         key_author = remove_unicode(key_author)
@@ -128,8 +135,16 @@ if __name__ == '__main__':
 
         year = cur.fetchall()[:][0][0]
 
-        citationkey = '{}_{}_{}'.format(key_author, year, key_publication)
+        cur.execute(("SELECT Title FROM Documents WHERE "
+                     "id='{}'").format(docid))
 
+        title = cur.fetchall()[:][0][0]
+        veryshorttitle = remove_unicode(get_first_word(title))
+        
+        # citationkey = '{}_{}_{}'.format(key_author, year, key_publication)
+        citationkey = '{}{}{}'.format(key_author, year,veryshorttitle) # Thalita
+        citationkey = citationkey.replace('None','')
+        
         cur.execute(("SELECT citationKey FROM Documents WHERE "
                      "id='{}'").format(docid))
 
@@ -150,106 +165,28 @@ if __name__ == '__main__':
                 except:
                     errors.append('error: ' + citationkey)
 
-        # titlecase(title)
-        cur.execute(("SELECT Title FROM Documents WHERE "
-                     "id='{}'").format(docid))
-
-        title = cur.fetchall()[:][0][0]
-        titlecased = titlecase(title)
-
-        if title != titlecased:
-            newtitle = titlecased.replace("'", "''")
-
-            try:
-                cur.execute(("UPDATE Documents SET Title="
-                    "'{title}' WHERE ID={ID}").format(title=newtitle, ID=docid))
-                modified.append(title + ' -> ' + titlecased)
-            except:
-                errors.append('error: ' + title)
-
+    duplicates = []
+    # Thalita: solve duplicates
+    # not ready
+    cur.execute("SELECT DISTINCT citationKey FROM Documents INNER JOIN DocumentFolders ON Documents.id=DocumentFolders.documentId  WHERE (DocumentFolders.folderId=1 or DocumentFolders.folderId=2) AND Documents.deletionPending='false'")
+    citekeys = cur.fetchall()[:]
+    citekeys = set([c[0] for c in citekeys])
+    for citationkey in citekeys:
+        cur.execute(("SELECT id from Documents INNER JOIN DocumentFolders ON Documents.id=DocumentFolders.documentId  WHERE (DocumentFolders.folderId=1 or DocumentFolders.folderId=2) AND Documents.deletionPending='false' AND Documents.citationKey='{}'").format(citationkey))
+        ids = [i[0] for i in cur.fetchall()]
+        if len(ids) > 1:
+            duplicates.append(citationkey + ' (%d)' % (len(ids)))
+            ids.sort()
+            for rank, docid in enumerate(ids):
+                citationkey += string.ascii_lowercase[rank]
+                '''
+                cur.execute(("UPDATE Documents SET citationKey="
+                             "'{new}' WHERE ID={ID}").format(new=citationkey,
+                                                             ID=docid))
+                '''
+ 
     from pprint import pprint
     pprint(modified)
     pprint(errors)
-
-
-if not 'obsolete':
-    if re.search(r'([a-z]+)(\d+)', k[0], re.UNICODE|re.IGNORECASE):
-        new = re.sub(r'([a-z]+)(\d+).+', r'\1-\2', k[0], re.UNICODE, re.IGNORECASE)
-
-        try:
-            new += '-' + journal_abbr[publications[i][0]]
-            new = new.lower()
-            new = new.replace('. ', '-')
-            new = new.replace(' ', '-')
-            new = new.replace('.', '')
-
-            cur.execute(("UPDATE {table} SET citationKey='{new}' WHERE ID={ID}"
-                        ).format(table=table, new=new, ID=docid))
-
-            print('{old} -> {new}'.format(old=k[0], new=new))
-
-        except:
-            print(k[0])
-
-    else:
-        print(k[0])
-
-
-    for i, k in enumerate(citationkeys):
-        if k[0]:
-            if re.search(r'\d+[a-z]+', k[0], re.UNICODE|re.IGNORECASE):
-                new = re.sub(r'(\d+)[a-z]+', r'\1', k[0], re.UNICODE, re.IGNORECASE)
-                try:
-                    new += '-' + journal_abbr[publications[i][0]]
-                    new = new.lower()
-                    new = new.replace('. ', '-')
-                    new = new.replace(' ', '-')
-                    new = new.replace('.', '')
-
-                    cur.execute("UPDATE {table} SET citationKey='{new}' WHERE ID={ID}".format(table=table, new=new, ID=docid))
-
-                    print('{old} -> {new}'.format(old=k[0], new=new) )
-
-                except:
-                    print(k[0])
-
-            else:
-                print(k[0])
-
-    # duplicated journal names
-    for i, k in enumerate(citationkeys):
-
-        if k[0]:
-
-            try:
-                new = journal_abbr[publications[i][0]] + ' ' + journal_abbr[publications[i][0]]
-                new = new.lower()
-                new = new.replace('. ', '-')
-                new = new.replace(' ', '-')
-                new = new.replace('.', '')
-
-                if k[0].find(new) != -1:
-                    new = k[0][:-len(new)/2]
-
-                    cur.execute("UPDATE {table} SET citationKey='{new}' WHERE ID={ID}".format(table=table, new=new, ID=docid))
-
-                    print('{old} -> {new}'.format(old=k[0], new=new) )
-
-            except:
-                print(k[0])
-
-
-    cur.execute("SELECT tag from DocumentTags where tag REGEXP 'class-[0-9]'")
-    cur.execute("SELECT citationKey FROM Documents WHERE citationKey REGEXP {}".format(r'[A-Z][a-z]+[0-9]+', ))
-
-    cur.execute("SELECT citationKey FROM Documents WHERE citationKey REGEXP {}".format('W[a-z]+1995',))
-
-    cur.execute("SELECT tag from DocumentTags where tag like '%Class%'")
-    pprint(cur.fetchall())
-
-    cur.execute("UPDATE DocumentTags set tag={} where tag={}".format('class-9', 'Class_9'))
-    cur.execute("SELECT tag from DocumentTags where tag like '%Class%'")
-
-    cur.execute("SELECT citationKey from Documents")
-    pprint(cur.fetchall())
+    pprint(duplicates)
 
