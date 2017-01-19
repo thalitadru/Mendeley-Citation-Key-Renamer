@@ -1,65 +1,76 @@
+#! /bin/python
 # This Python file uses the following encoding: utf-8
 import os
 import apsw
 import re
 import string
-
+import argparse
+from abbr_rule import abbr_rule
 from unidecode import unidecode
 from pprint import pprint
+import getpass
 
-
-MAX_AUTH = 1
-ETAL = False
 
 def get_first_word(title):
-    # lista igual a do JabRef https://github.com/JabRef/jabref/blob/master/src/main/java/net/sf/jabref/logic/formatter/casechanger/Word.java
-    eliminate = set([
+    # Stop words list from JabRef https://github.com/JabRef/jabref/blob/master/src/main/java/net/sf/jabref/logic/formatter/casechanger/Word.java
+    stop_words = set([
         # articles
-        "a", "an", "the", 
+        "a", "an", "the",
+        # Personal: french and partuguese articles
+        "la","le","l", "o","um","un","une"
         # prepositions
-        "above", "about", "across", "against", "along", "among", "around", "at", "before", "behind", "below", "beneath", "beside", "between", "beyond", "by", "down", "during", "except", "for", "from", "in", "inside", "into", "like", "near", "of", "off", "on", "onto", "since", "to", "toward", "through", "under", "until", "up", "upon", "with", "within", "without", 
+        "above", "about", "across", "against", "along", "among", "around", "at", "before", "behind", "below", "beneath", "beside", "between", "beyond", "by", "down", "during", "except", "for", "from", "in", "inside", "into", "like", "near", "of", "off", "on", "onto", "since", "to", "toward", "through", "under", "until", "up", "upon", "with", "within", "without",
         # conjunctions
         "and", "but", "for", "nor", "or", "so", "yet"])
-    for word in title.replace('-',' ').replace(':','').replace(',','').replace('{','').replace('}', '').split():
-        if word.lower() not in eliminate:
+    signs = {"-": " ",
+             ":": " ",
+             ",": " ",
+             "{": "",
+             "}": "",
+             "'": " ",
+             "’": " "}
+    for sign, replacement in signs.items():
+        title = title.replace(sign, replacement)
+    for word in title.split():
+        if word.lower() not in stop_words:
             break
-    return word
+    return word.capitalize()
 
 
 def regexp(expr, item):
     reg = re.compile(expr)
     return reg.search(item) is not None
 
-unicode_rule = {'. ': '-',
-                ' ': '-',
-                '.': '',
-                "'": '',
-                u'å': 'a',
-                u'ä': 'a',
-                u'é': 'e',
-                u'è': 'e',
-                u'í': 'i',
-                u'ö': 'o',
-                u'Ö': 'o',
-                u'ø': 'o',
-                u'ç': 'c',
-                u'ü': 'u',
-                u'\u2026': '...',
-                }
 
 def remove_unicode(arg):
     return unidecode(arg)
 
 if __name__ == '__main__':
     '''
-    change Mendeley citation key to author-author-year-journalabbr format
+    change Mendeley citation key to <author>[<authors>][et_al]<year>[<veryshorttitle><journalabrev>] format
     '''
-    sqlite = 'thalitafdrumond@gmail.com@www.mendeley.com.sqlite'  # change
+    parser = argparse.ArgumentParser(
+        description='Generate citation keys according to a given format')
+    parser.add_argument('--mendeley_db',
+        default= 'thalitafdrumond@gmail.com@www.mendeley.com.sqlite')
+    parser.add_argument('--mendeley_path', default=None)
+    parser.add_argument('--max_authors', default=1)
+    parser.add_argument('--et_al', default=False)
+    parser.add_argument('--separator', default='')
+    parser.add_argument('--veryshorttitle', default=True)
+    parser.add_argument('--journal', default=False)
+    parser.add_argument('--test_run', default=False)
+    args = parser.parse_args()
 
-    if os.name == 'nt':
-        path_db = r'\Users\thalita\AppData\Local\Mendeley Ltd\Mendeley Desktop\{}'.format(sqlite)
+    sqlite = args.mendeley_db
+    ETAL = args.et_al
+    MAX_AUTH = args.max_authors
+
+    if args.mendeley_path is None:
+        user = getpass.getuser()
+        path_db = r'/home/{}/.local/share/data/Mendeley Ltd./Mendeley Desktop/{}'.format(user, sqlite)
     else:
-        path_db = r'/home/thalita/.local/share/data/Mendeley Ltd./Mendeley Desktop/{}'.format(sqlite)
+        path_db = args.mendeley_path + sqlite
 
     con = apsw.Connection(path_db)
 
@@ -76,42 +87,46 @@ if __name__ == '__main__':
 
     for i, k in enumerate(documentids):
         docid = k[0]
-        cur.execute(("SELECT Publication FROM Documents WHERE "
-                     "id='{}'").format(docid))
-
-        publication = cur.fetchall()[:][0][0]
-
-        if publication:
-            # get the journal abbr
-            exception = False
-            key_publication = ''
-            for j, word in enumerate(publication.split(' ')):
-                word = word.replace('.', '')
-                word = word.replace(',', '')
-                word = word.replace(':', '')
-                try:
-                    temp_abbr = abbr_rule[word.lower()]
-                except:
-                    print((u'no word: "{}" in {}'
-                           '').format(remove_unicode(word),
-                               remove_unicode(publication)))
-                    exception = True
-                    continue
-
-                if len(temp_abbr):
-                    key_publication += abbr_rule[word.lower()].title() + '_'
-
-            key_publication = key_publication[:-1]
-
-            if exception:
-                continue
-        else:
-            cur.execute(("SELECT Type FROM Documents WHERE "
+        sep = args.separator
+        if args.journal:
+            cur.execute(("SELECT Publication FROM Documents WHERE "
                          "id='{}'").format(docid))
-            item_type = cur.fetchall()[:][0][0]
-            if item_type == "Book":
-                key_publication = "book"
 
+            publication = cur.fetchall()[:][0][0]
+            key_publication = ''
+            if publication:
+                # get the journal abbr
+                exception = False
+                for j, word in enumerate(publication.split(' ')):
+                    word = word.replace('.', '')
+                    word = word.replace(',', '')
+                    word = word.replace(':', '')
+                    try:
+                        temp_abbr = abbr_rule[word.lower()]
+                    except:
+
+                        print((u'no word: "{}" in {}'
+                               '').format(remove_unicode(word),
+                                   remove_unicode(publication)))
+                        exception = True
+                        continue
+
+                    if len(temp_abbr):
+                        key_publication += abbr_rule[word.lower()].title() + '_'
+
+                key_publication = key_publication[:-1]
+
+                if exception:
+                    continue
+            else:
+                cur.execute(("SELECT Type FROM Documents WHERE "
+                             "id='{}'").format(docid))
+                item_type = cur.fetchall()[:][0][0]
+                if item_type == "Book":
+                    key_publication = "book"
+            key_publication = remove_unicode(key_publication)
+
+        # authors
         cur.execute(("SELECT lastName FROM DocumentContributors WHERE "
                      "documentID='{}'").format(docid))
 
@@ -120,38 +135,45 @@ if __name__ == '__main__':
         key_author = ''
         for j, lastname in enumerate(lastnames):
             if j == MAX_AUTH:
-                key_author += (' ' + 'et-al') * ETAL
+                key_author += ('-' + 'et-al') * ETAL
                 break
             else:
-                key_author += ' ' * bool(j) + lastname[0]
-        
+                name = lastname[0].split()[-1]
+                name = name.replace('-','').replace("'",'')
+                key_author += '-' * bool(j) + name
         key_author = key_author.strip().title()
 
         key_author = remove_unicode(key_author)
-        key_publication = remove_unicode(key_publication)
+
 
         cur.execute(("SELECT year FROM Documents WHERE "
                      "id='{}'").format(docid))
 
         year = cur.fetchall()[:][0][0]
 
-        cur.execute(("SELECT Title FROM Documents WHERE "
-                     "id='{}'").format(docid))
+        # veryshorttitle
+        if args.veryshorttitle:
+            cur.execute(("SELECT Title FROM Documents WHERE "
+                         "id='{}'").format(docid))
 
-        title = cur.fetchall()[:][0][0]
-        veryshorttitle = remove_unicode(get_first_word(title))
-        
-        # citationkey = '{}_{}_{}'.format(key_author, year, key_publication)
-        citationkey = '{}{}{}'.format(key_author, year,veryshorttitle) # Thalita
+            title = cur.fetchall()[:][0][0]
+            veryshorttitle = remove_unicode(get_first_word(title))
+
+
+        citationkey = ('{}'+sep+'{}').format(key_author, year)
+        if args.veryshorttitle:
+            citationkey += sep + veryshorttitle
+        if args.journal:
+            citationkey += sep + publication
         citationkey = citationkey.replace('None','')
-        
+
         cur.execute(("SELECT citationKey FROM Documents WHERE "
                      "id='{}'").format(docid))
 
         citationkey_old = cur.fetchall()[:][0][0]
 
         if citationkey != citationkey_old:
-            if not 'test-run':
+            if args.test_run:
                 if citationkey_old:
                     modified.append(citationkey_old + ' -> ' +  citationkey)
                 else:
@@ -184,8 +206,8 @@ if __name__ == '__main__':
                              "'{new}' WHERE ID={ID}").format(new=citationkey,
                                                              ID=docid))
                 '''
- 
-    from pprint import pprint
+
+
     pprint(modified)
     pprint(errors)
     pprint(duplicates)
