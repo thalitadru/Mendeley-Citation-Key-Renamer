@@ -5,6 +5,7 @@ import apsw
 import re
 import string
 import argparse
+from collections import defaultdict
 from abbr_rule import abbr_rule
 from unidecode import unidecode
 from pprint import pprint
@@ -17,7 +18,7 @@ def get_first_word(title):
         # articles
         "a", "an", "the",
         # Personal: french and partuguese articles
-        "la","le","l", "o","um","un","une"
+        "la","le","l", "o","um","uma","un","une",
         # prepositions
         "above", "about", "across", "against", "along", "among", "around", "at", "before", "behind", "below", "beneath", "beside", "between", "beyond", "by", "down", "during", "except", "for", "from", "in", "inside", "into", "like", "near", "of", "off", "on", "onto", "since", "to", "toward", "through", "under", "until", "up", "upon", "with", "within", "without",
         # conjunctions
@@ -28,7 +29,7 @@ def get_first_word(title):
              "{": "",
              "}": "",
              "'": " ",
-             "’": " "}
+             u"’": " "}
     for sign, replacement in signs.items():
         title = title.replace(sign, replacement)
     for word in title.split():
@@ -52,34 +53,48 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Generate citation keys according to a given format')
     parser.add_argument('--mendeley_db',
-        default= 'thalitafdrumond@gmail.com@www.mendeley.com.sqlite')
+                        default=None)
     parser.add_argument('--mendeley_path', default=None)
     parser.add_argument('--max_authors', default=1)
-    parser.add_argument('--et_al', default=False)
-    parser.add_argument('--separator', default='')
-    parser.add_argument('--veryshorttitle', default=True)
-    parser.add_argument('--journal', default=False)
-    parser.add_argument('--test_run', default=False)
+    parser.add_argument('--et_al', action="store_true")
+    parser.add_argument('-s','--separator', default='')
+    parser.add_argument('-v','--veryshorttitle', action="store_true")
+    parser.add_argument('-j','--journal', action="store_true")
+    parser.add_argument('-t','--test_run', action="store_true")
+    parser.add_argument('-f','--folder', action="append")
     args = parser.parse_args()
 
-    sqlite = args.mendeley_db
-    ETAL = args.et_al
-    MAX_AUTH = args.max_authors
-
+    path_db = args.mendeley_path
     if args.mendeley_path is None:
         user = getpass.getuser()
-        path_db = r'/home/{}/.local/share/data/Mendeley Ltd./Mendeley Desktop/{}'.format(user, sqlite)
-    else:
-        path_db = args.mendeley_path + sqlite
+        path_db = r'/home/{}/.local/share/data/Mendeley Ltd./Mendeley Desktop/'.format(user)
+        print("Using default DB path {}".format(path_db))
 
-    con = apsw.Connection(path_db)
+    sqlite = args.mendeley_db
+    if sqlite is None:
+        sqlite = [f for f in os.listdir(path_db)
+                  if f.endswith("@www.mendeley.com.sqlite")][0]
+        print("Using default DB file {}".format(sqlite))
+
+    ETAL = args.et_al
+    MAX_AUTH = int(args.max_authors)
+
+
+    con = apsw.Connection(path_db + sqlite)
 
     con.createscalarfunction("REGEXP", regexp)
 
     cur = con.cursor()
 
+    folders = args.folder
+    if len(args.folder) is 0:
+        result = cur.execute("SELECT name FROM Folders").fetchall()
+        folders = [f for f,_ in result]
+    folders_query = " OR ".join(["Folders.name=\"{}\"".format(f)
+                               for f in folders])
 
-    cur.execute("SELECT documentId FROM DocumentFolders WHERE (folderId=1 OR folderId=2)")
+
+    cur.execute("SELECT documentId FROM DocumentFolders INNER JOIN Folders ON DocumentFolders.folderId=Folders.id WHERE {}".format(folders_query))
     documentids = cur.fetchall()[:]
 
     modified = []  # list of modified citations
@@ -88,6 +103,7 @@ if __name__ == '__main__':
     for i, k in enumerate(documentids):
         docid = k[0]
         sep = args.separator
+        # journal 
         if args.journal:
             cur.execute(("SELECT Publication FROM Documents WHERE "
                          "id='{}'").format(docid))
@@ -135,13 +151,14 @@ if __name__ == '__main__':
         key_author = ''
         for j, lastname in enumerate(lastnames):
             if j == MAX_AUTH:
-                key_author += ('-' + 'et-al') * ETAL
+                if ETAL:
+                    key_author += '-' + 'et-al'
                 break
             else:
                 name = lastname[0].split()[-1]
                 name = name.replace('-','').replace("'",'')
+                name = name.strip().title()
                 key_author += '-' * bool(j) + name
-        key_author = key_author.strip().title()
 
         key_author = remove_unicode(key_author)
 
@@ -149,7 +166,7 @@ if __name__ == '__main__':
         cur.execute(("SELECT year FROM Documents WHERE "
                      "id='{}'").format(docid))
 
-        year = cur.fetchall()[:][0][0]
+        year = str(cur.fetchall()[:][0][0])
 
         # veryshorttitle
         if args.veryshorttitle:
@@ -159,14 +176,17 @@ if __name__ == '__main__':
             title = cur.fetchall()[:][0][0]
             veryshorttitle = remove_unicode(get_first_word(title))
 
-
-        citationkey = ('{}'+sep+'{}').format(key_author, year)
-        if args.veryshorttitle:
+        # compose key according to input args
+        citationkey = key_author
+        if year != '':
+            citationkey += sep + year
+        if args.veryshorttitle and veryshorttitle != '':
             citationkey += sep + veryshorttitle
-        if args.journal:
-            citationkey += sep + publication
-        citationkey = citationkey.replace('None','')
+        if args.journal and key_publication != '':
+            citationkey += sep + key_publication
+        citationkey = citationkey.replace('None'+sep,'')
 
+        # get current citation keys
         cur.execute(("SELECT citationKey FROM Documents WHERE "
                      "id='{}'").format(docid))
 
@@ -190,25 +210,35 @@ if __name__ == '__main__':
     duplicates = []
     # Thalita: solve duplicates
     # not ready
-    cur.execute("SELECT DISTINCT citationKey FROM Documents INNER JOIN DocumentFolders ON Documents.id=DocumentFolders.documentId  WHERE (DocumentFolders.folderId=1 or DocumentFolders.folderId=2) AND Documents.deletionPending='false'")
-    citekeys = cur.fetchall()[:]
-    citekeys = set([c[0] for c in citekeys])
-    for citationkey in citekeys:
-        cur.execute(("SELECT id from Documents INNER JOIN DocumentFolders ON Documents.id=DocumentFolders.documentId  WHERE (DocumentFolders.folderId=1 or DocumentFolders.folderId=2) AND Documents.deletionPending='false' AND Documents.citationKey='{}'").format(citationkey))
-        ids = [i[0] for i in cur.fetchall()]
+    cur.execute("""
+    SELECT Documents.id, citationKey
+    FROM Documents
+        INNER JOIN (DocumentFolders
+            INNER JOIN Folders
+            ON DocumentFolders.folderId=Folders.id
+        )
+        ON Documents.id=DocumentFolders.documentId
+    WHERE ({}) AND Documents.deletionPending='false'
+    """.format(folders_query))
+    ids_dict = dict(cur.fetchall())
+    citekeys_dict = defaultdict(list)
+    for docid, citekey in ids_dict.iteritems():
+        citekeys_dict[citekey].append(docid)
+        
+    for citationkey, ids in citekeys_dict.iteritems():
         if len(ids) > 1:
             duplicates.append(citationkey + ' (%d)' % (len(ids)))
             ids.sort()
             for rank, docid in enumerate(ids):
-                citationkey += string.ascii_lowercase[rank]
-                '''
-                cur.execute(("UPDATE Documents SET citationKey="
-                             "'{new}' WHERE ID={ID}").format(new=citationkey,
-                                                             ID=docid))
-                '''
-
+                if rank > 0 :
+                    new_key = citationkey + string.ascii_uppercase[rank-1]
+                    duplicates.append(new_key)
+                    cur.execute("""
+                    UPDATE Documents 
+                    SET citationKey='{new}'
+                    WHERE ID={ID}
+                    """.format(new=new_key, ID=docid))
 
     pprint(modified)
     pprint(errors)
     pprint(duplicates)
-
