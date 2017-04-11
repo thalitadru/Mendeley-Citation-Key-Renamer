@@ -17,7 +17,7 @@ def get_first_word(title):
     stop_words = set([
         # articles
         "a", "an", "the",
-        # Personal: french and partuguese articles
+        # Personal: french and portuguese articles
         "la","le","l", "o","um","uma","un","une",
         # prepositions
         "above", "about", "across", "against", "along", "among", "around", "at", "before", "behind", "below", "beneath", "beside", "between", "beyond", "by", "down", "during", "except", "for", "from", "in", "inside", "into", "like", "near", "of", "off", "on", "onto", "since", "to", "toward", "through", "under", "until", "up", "upon", "with", "within", "without",
@@ -79,166 +79,165 @@ if __name__ == '__main__':
     ETAL = args.et_al
     MAX_AUTH = int(args.max_authors)
 
+    with apsw.Connection(path_db + sqlite) as con:
 
-    con = apsw.Connection(path_db + sqlite)
+        con.createscalarfunction("REGEXP", regexp)
 
-    con.createscalarfunction("REGEXP", regexp)
+        cur = con.cursor()
 
-    cur = con.cursor()
-
-    folders = args.folder
-    if len(args.folder) is 0:
-        result = cur.execute("SELECT name FROM Folders").fetchall()
-        folders = [f for f,_ in result]
-    folders_query = " OR ".join(["Folders.name=\"{}\"".format(f)
-                               for f in folders])
+        folders = args.folder
+        if len(args.folder) is 0:
+            result = cur.execute("SELECT name FROM Folders").fetchall()
+            folders = [f for f,_ in result]
+        folders_query = " OR ".join(["Folders.name=\"{}\"".format(f)
+                                   for f in folders])
 
 
-    cur.execute("SELECT documentId FROM DocumentFolders INNER JOIN Folders ON DocumentFolders.folderId=Folders.id WHERE {}".format(folders_query))
-    documentids = cur.fetchall()[:]
+        cur.execute("SELECT documentId FROM DocumentFolders INNER JOIN Folders ON DocumentFolders.folderId=Folders.id WHERE {}".format(folders_query))
+        documentids = cur.fetchall()[:]
 
-    modified = []  # list of modified citations
-    errors = []  # list of citations with errors
+        modified = []  # list of modified citations
+        errors = []  # list of citations with errors
 
-    for i, k in enumerate(documentids):
-        docid = k[0]
-        sep = args.separator
-        # journal 
-        if args.journal:
-            cur.execute(("SELECT Publication FROM Documents WHERE "
-                         "id='{}'").format(docid))
-
-            publication = cur.fetchall()[:][0][0]
-            key_publication = ''
-            if publication:
-                # get the journal abbr
-                exception = False
-                for j, word in enumerate(publication.split(' ')):
-                    word = word.replace('.', '')
-                    word = word.replace(',', '')
-                    word = word.replace(':', '')
-                    try:
-                        temp_abbr = abbr_rule[word.lower()]
-                    except:
-
-                        print((u'no word: "{}" in {}'
-                               '').format(remove_unicode(word),
-                                   remove_unicode(publication)))
-                        exception = True
-                        continue
-
-                    if len(temp_abbr):
-                        key_publication += abbr_rule[word.lower()].title() + '_'
-
-                key_publication = key_publication[:-1]
-
-                if exception:
-                    continue
-            else:
-                cur.execute(("SELECT Type FROM Documents WHERE "
+        for i, k in enumerate(documentids):
+            docid = k[0]
+            sep = args.separator
+            # journal
+            if args.journal:
+                cur.execute(("SELECT Publication FROM Documents WHERE "
                              "id='{}'").format(docid))
-                item_type = cur.fetchall()[:][0][0]
-                if item_type == "Book":
-                    key_publication = "book"
-            key_publication = remove_unicode(key_publication)
 
-        # authors
-        cur.execute(("SELECT lastName FROM DocumentContributors WHERE "
-                     "documentID='{}'").format(docid))
+                publication = cur.fetchall()[:][0][0]
+                key_publication = ''
+                if publication:
+                    # get the journal abbr
+                    exception = False
+                    for j, word in enumerate(publication.split(' ')):
+                        word = word.replace('.', '')
+                        word = word.replace(',', '')
+                        word = word.replace(':', '')
+                        try:
+                            temp_abbr = abbr_rule[word.lower()]
+                        except:
 
-        lastnames = cur.fetchall()[:]
+                            print((u'no word: "{}" in {}'
+                                   '').format(remove_unicode(word),
+                                       remove_unicode(publication)))
+                            exception = True
+                            continue
 
-        key_author = ''
-        for j, lastname in enumerate(lastnames):
-            if j == MAX_AUTH:
-                if ETAL:
-                    key_author += '-' + 'et-al'
-                break
-            else:
-                name = lastname[0].split()[-1]
-                name = name.replace('-','').replace("'",'')
-                name = name.strip().title()
-                key_author += '-' * bool(j) + name
+                        if len(temp_abbr):
+                            key_publication += abbr_rule[word.lower()].title() + '_'
 
-        key_author = remove_unicode(key_author)
+                    key_publication = key_publication[:-1]
+
+                    if exception:
+                        continue
+                else:
+                    cur.execute(("SELECT Type FROM Documents WHERE "
+                                 "id='{}'").format(docid))
+                    item_type = cur.fetchall()[:][0][0]
+                    if item_type == "Book":
+                        key_publication = "book"
+                key_publication = remove_unicode(key_publication)
+
+            # authors
+            cur.execute(("SELECT lastName FROM DocumentContributors WHERE "
+                         "documentID='{}'").format(docid))
+
+            lastnames = cur.fetchall()[:]
+
+            key_author = ''
+            for j, lastname in enumerate(lastnames):
+                if j == MAX_AUTH:
+                    if ETAL:
+                        key_author += '-' + 'et-al'
+                    break
+                else:
+                    name = lastname[0].split()[-1]
+                    name = name.replace('-','').replace("'",'')
+                    name = name.strip().title()
+                    key_author += '-' * bool(j) + name
+
+            key_author = remove_unicode(key_author)
 
 
-        cur.execute(("SELECT year FROM Documents WHERE "
-                     "id='{}'").format(docid))
-
-        year = str(cur.fetchall()[:][0][0])
-
-        # veryshorttitle
-        if args.veryshorttitle:
-            cur.execute(("SELECT Title FROM Documents WHERE "
+            cur.execute(("SELECT year FROM Documents WHERE "
                          "id='{}'").format(docid))
 
-            title = cur.fetchall()[:][0][0]
-            veryshorttitle = remove_unicode(get_first_word(title))
+            year = str(cur.fetchall()[:][0][0])
 
-        # compose key according to input args
-        citationkey = key_author
-        if year != '':
-            citationkey += sep + year
-        if args.veryshorttitle and veryshorttitle != '':
-            citationkey += sep + veryshorttitle
-        if args.journal and key_publication != '':
-            citationkey += sep + key_publication
-        citationkey = citationkey.replace('None'+sep,'')
+            # veryshorttitle
+            if args.veryshorttitle:
+                cur.execute(("SELECT Title FROM Documents WHERE "
+                             "id='{}'").format(docid))
 
-        # get current citation keys
-        cur.execute(("SELECT citationKey FROM Documents WHERE "
-                     "id='{}'").format(docid))
+                title = cur.fetchall()[:][0][0]
+                veryshorttitle = remove_unicode(get_first_word(title))
 
-        citationkey_old = cur.fetchall()[:][0][0]
+            # compose key according to input args
+            citationkey = key_author
+            if year != '':
+                citationkey += sep + year
+            if args.veryshorttitle and veryshorttitle != '':
+                citationkey += sep + veryshorttitle
+            if args.journal and key_publication != '':
+                citationkey += sep + key_publication
+            citationkey = citationkey.replace('None'+sep,'')
 
-        if citationkey != citationkey_old:
-            if args.test_run:
-                if citationkey_old:
-                    modified.append(citationkey_old + ' -> ' +  citationkey)
+            # get current citation keys
+            cur.execute(("SELECT citationKey FROM Documents WHERE "
+                         "id='{}'").format(docid))
+
+            citationkey_old = cur.fetchall()[:][0][0]
+
+            if citationkey != citationkey_old:
+                if args.test_run:
+                    if citationkey_old:
+                        modified.append(citationkey_old + ' -> ' +  citationkey)
+                    else:
+                        modified.append('" " -> ' +  citationkey)
                 else:
-                    modified.append('" " -> ' +  citationkey)
-            else:
-                try:
-                    cur.execute(("UPDATE Documents SET citationKey="
-                        "'{new}' WHERE ID={ID}").format(new=citationkey,
-                                                        ID=docid))
-                    modified.append(citationkey_old + ' -> ' + citationkey)
-                except:
-                    errors.append('error: ' + citationkey)
+                    try:
+                        cur.execute(("UPDATE Documents SET citationKey="
+                            "'{new}' WHERE ID={ID}").format(new=citationkey,
+                                                            ID=docid))
+                        modified.append(citationkey_old + ' -> ' + citationkey)
+                    except:
+                        errors.append('error: ' + citationkey)
 
-    duplicates = []
-    # Thalita: solve duplicates
-    # not ready
-    cur.execute("""
-    SELECT Documents.id, citationKey
-    FROM Documents
-        INNER JOIN (DocumentFolders
-            INNER JOIN Folders
-            ON DocumentFolders.folderId=Folders.id
-        )
-        ON Documents.id=DocumentFolders.documentId
-    WHERE ({}) AND Documents.deletionPending='false'
-    """.format(folders_query))
-    ids_dict = dict(cur.fetchall())
-    citekeys_dict = defaultdict(list)
-    for docid, citekey in ids_dict.iteritems():
-        citekeys_dict[citekey].append(docid)
-        
-    for citationkey, ids in citekeys_dict.iteritems():
-        if len(ids) > 1:
-            duplicates.append(citationkey + ' (%d)' % (len(ids)))
-            ids.sort()
-            for rank, docid in enumerate(ids):
-                if rank > 0 :
-                    new_key = citationkey + string.ascii_uppercase[rank-1]
-                    duplicates.append(new_key)
-                    cur.execute("""
-                    UPDATE Documents 
-                    SET citationKey='{new}'
-                    WHERE ID={ID}
-                    """.format(new=new_key, ID=docid))
+        duplicates = []
+        # Thalita: solve duplicates
+        # not ready
+        cur.execute("""
+        SELECT Documents.id, citationKey
+        FROM Documents
+            INNER JOIN (DocumentFolders
+                INNER JOIN Folders
+                ON DocumentFolders.folderId=Folders.id
+            )
+            ON Documents.id=DocumentFolders.documentId
+        WHERE ({}) AND Documents.deletionPending='false'
+        """.format(folders_query))
+        ids_dict = dict(cur.fetchall())
+        citekeys_dict = defaultdict(list)
+        for docid, citekey in ids_dict.iteritems():
+            citekeys_dict[citekey].append(docid)
 
-    pprint(modified)
-    pprint(errors)
-    pprint(duplicates)
+        for citationkey, ids in citekeys_dict.iteritems():
+            if len(ids) > 1:
+                duplicates.append(citationkey + ' (%d)' % (len(ids)))
+                ids.sort()
+                for rank, docid in enumerate(ids):
+                    if rank > 0 :
+                        new_key = citationkey + string.ascii_uppercase[rank-1]
+                        duplicates.append(new_key)
+                        cur.execute("""
+                        UPDATE Documents
+                        SET citationKey='{new}'
+                        WHERE ID={ID}
+                        """.format(new=new_key, ID=docid))
+
+        pprint(modified)
+        pprint(errors)
+        pprint(duplicates)
